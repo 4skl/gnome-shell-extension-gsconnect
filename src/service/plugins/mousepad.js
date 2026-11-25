@@ -18,11 +18,13 @@ export const Metadata = {
         'kdeconnect.mousepad.echo',
         'kdeconnect.mousepad.request',
         'kdeconnect.mousepad.keyboardstate',
+        'kdeconnect.presenter',
     ],
     outgoingCapabilities: [
         'kdeconnect.mousepad.echo',
         'kdeconnect.mousepad.request',
         'kdeconnect.mousepad.keyboardstate',
+        'kdeconnect.presenter',
     ],
     actions: {
         keyboard: {
@@ -128,6 +130,13 @@ const MousepadPlugin = GObject.registerClass({
             GObject.ParamFlags.READABLE,
             false
         ),
+        'screenshare': GObject.ParamSpec.boolean(
+            'screenshare',
+            'Screenshare',
+            'Screen sharing mode',
+            GObject.ParamFlags.READABLE,
+            false
+        ),
     },
 }, class MousepadPlugin extends Plugin {
     _init(device) {
@@ -142,6 +151,13 @@ const MousepadPlugin = GObject.registerClass({
             'changed::share-control',
             this._sendState.bind(this)
         );
+        
+        this._screenshare = false;
+        this._screenTexture = null;
+        this._screenshareDialog = null;
+        this._screenShareZoom = 1.0;
+        this._screenSharePanX = 0;
+        this._screenSharePanY = 0;
     }
 
     get state() {
@@ -149,6 +165,10 @@ const MousepadPlugin = GObject.registerClass({
             this._state = false;
 
         return this._state;
+    }
+
+    get screenshare() {
+        return this._screenshare;
     }
 
     connected() {
@@ -162,6 +182,8 @@ const MousepadPlugin = GObject.registerClass({
 
         this._state = false;
         this.notify('state');
+        this._screenshare = false;
+        this.notify('screenshare');
     }
 
     handlePacket(packet) {
@@ -176,6 +198,10 @@ const MousepadPlugin = GObject.registerClass({
 
             case 'kdeconnect.mousepad.keyboardstate':
                 this._handleState(packet);
+                break;
+                
+            case 'kdeconnect.presenter':
+                this._handlePresenterPacket(packet.body);
                 break;
         }
     }
@@ -305,14 +331,147 @@ const MousepadPlugin = GObject.registerClass({
     }
 
     /**
-     * Handle a state change from the remote keyboard. This is an indication
-     * that the remote keyboard is ready to accept input.
+     * Handle a presenter packet for screen sharing
      *
-     * @param {object} packet - A `kdeconnect.mousepad.keyboardstate` packet
+     * @param {object} body - The body of a `kdeconnect.presenter` packet
      */
-    _handleState(packet) {
-        this._state = !!packet.body.state;
-        this.notify('state');
+    _handlePresenterPacket(body) {
+        if (body.hasOwnProperty('screenData')) {
+            // Handle screen data (image)
+            this._handleScreenData(body.screenData);
+        } else if (body.hasOwnProperty('pointerPosition')) {
+            // Handle pointer movement
+            this._handlePointerPosition(body.pointerPosition);
+        } else if (body.hasOwnProperty('zoom')) {
+            // Handle zoom changes
+            this._handleZoom(body.zoom);
+        } else if (body.hasOwnProperty('pan')) {
+            // Handle panning
+            this._handlePan(body.pan);
+        } else if (body.hasOwnProperty('startScreenShare')) {
+            // Start screen sharing mode
+            this._startScreenShare();
+        } else if (body.hasOwnProperty('stopScreenShare')) {
+            // Stop screen sharing mode
+            this._stopScreenShare();
+        }
+    }
+
+    /**
+     * Handle screen data (image)
+     *
+     * @param {string} screenData - Base64 encoded screen image
+     */
+    _handleScreenData(screenData) {
+        // This method will be called when screen data arrives
+        // We need to update the screen sharing dialog with the new image
+        if (this._screenshareDialog !== undefined && this._screenshare) {
+            // Decode base64 screen data if needed
+            let imageData;
+            
+            // Check if screenData is a base64 string that needs decoding
+            if (typeof screenData === 'string' && screenData.startsWith('data:image')) {
+                // Extract base64 data from data URL
+                const base64Data = screenData.split(',')[1];
+                imageData = GLib.base64_decode(base64Data);
+            } else if (typeof screenData === 'string') {
+                // Assume it's base64 encoded data
+                try {
+                    imageData = GLib.base64_decode(screenData);
+                } catch (e) {
+                    // If decoding fails, treat as raw data
+                    imageData = screenData;
+                }
+            } else {
+                // Already decoded data
+                imageData = screenData;
+            }
+            
+            // Update the screen image in the dialog
+            this._screenshareDialog.handleScreenData(imageData);
+        }
+    }
+
+    /**
+     * Handle pointer position updates
+     *
+     * @param {object} position - Pointer position data
+     */
+    _handlePointerPosition(position) {
+        // Handle pointer movement for screen sharing
+        if (this._screenshareDialog && this._screenshareDialog.pointer) {
+            // Update pointer position in the dialog
+            this._screenshareDialog.pointer.x = position.x;
+            this._screenshareDialog.pointer.y = position.y;
+        }
+    }
+
+    /**
+     * Handle zoom changes
+     *
+     * @param {number} zoom - Zoom level
+     */
+    _handleZoom(zoom) {
+        this._screenShareZoom = zoom;
+        if (this._screenshareDialog) {
+            // Update zoom in the dialog
+            this._screenshareDialog.updateZoom(zoom);
+        }
+    }
+
+    /**
+     * Handle panning
+     *
+     * @param {object} pan - Pan coordinates
+     */
+    _handlePan(pan) {
+        this._screenSharePanX = pan.x;
+        this._screenSharePanY = pan.y;
+        if (this._screenshareDialog) {
+            // Update pan in the dialog
+            this._screenshareDialog.updatePan(pan.x, pan.y);
+        }
+    }
+
+    /**
+     * Start screen sharing mode
+     */
+    _startScreenShare() {
+        this._screenshare = true;
+        this.notify('screenshare');
+        // Open screen sharing dialog
+        this._openScreenShareDialog();
+    }
+
+    /**
+     * Stop screen sharing mode
+     */
+    _stopScreenShare() {
+        this._screenshare = false;
+        this.notify('screenshare');
+        // Close screen sharing dialog
+        this._closeScreenShareDialog();
+    }
+
+    /**
+     * Open the screen sharing dialog
+     */
+    _openScreenShareDialog() {
+        if (this._screenshareDialog === undefined) {
+            this._createScreenSharingDialog();
+        }
+
+        this._screenshareDialog.present();
+    }
+
+    /**
+     * Close the screen sharing dialog
+     */
+    _closeScreenShareDialog() {
+        if (this._screenshareDialog !== undefined) {
+            this._screenshareDialog.destroy();
+            this._screenshareDialog = undefined;
+        }
     }
 
     /**
@@ -359,6 +518,104 @@ const MousepadPlugin = GObject.registerClass({
         this._dialog.present();
     }
 
+    /**
+     * Start screen sharing mode
+     */
+    _startScreenSharing() {
+        if (!this._screenshare) {
+            this._screenshare = true;
+            
+            // Create or show the screen sharing dialog
+            if (this._screenshareDialog === undefined) {
+                this._createScreenSharingDialog();
+            } else {
+                this._screenshareDialog.present();
+            }
+            
+            // Send a request to start screen sharing on the device
+            this._sendScreenShareRequest();
+        }
+    }
+
+    /**
+     * Stop screen sharing mode
+     */
+    _stopScreenSharing() {
+        if (this._screenshare) {
+            this._screenshare = false;
+            
+            if (this._screenshareDialog !== undefined) {
+                this._screenshareDialog.destroy();
+                this._screenshareDialog = undefined;
+            }
+            
+            // Send a stop signal to the device
+            this.device.sendPacket({
+                type: 'kdeconnect.presenter',
+                body: {
+                    stop: true
+                }
+            });
+        }
+    }
+
+    /**
+     * Create the screen sharing dialog
+     */
+    _createScreenSharingDialog() {
+        // This is a placeholder - actual implementation would create the UI
+        // For now, we'll just initialize the dialog reference
+        this._screenshareDialog = new ScreenSharingDialog({
+            device: this.device,
+            plugin: this,
+        });
+    }
+
+    /**
+     * Update the screen image in the dialog
+     */
+    _updateScreenImage(screenData) {
+        // This method will be implemented when the actual UI is created
+        // It should update the displayed image with the new screen data
+    }
+
+    /**
+     * Update pointer position on the screen
+     */
+    _updatePointerPosition(dx, dy) {
+        // This method will be implemented when the actual UI is created
+        // It should update the pointer position on the screen display
+    }
+
+    /**
+     * Update zoom level
+     */
+    _updateZoomLevel(zoom) {
+        // This method will be implemented when the actual UI is created
+        // It should adjust the zoom level of the screen display
+    }
+
+    /**
+     * Update pan position
+     */
+    _updatePanPosition(panX, panY) {
+        // This method will be implemented when the actual UI is created
+        // It should adjust the panning position of the screen display
+    }
+
+    /**
+     * Send screen sharing request to the device
+     */
+    _sendScreenShareRequest() {
+        // Request screen sharing from the device
+        this.device.sendPacket({
+            type: 'kdeconnect.presenter',
+            body: {
+                start: true
+            }
+        });
+    }
+
     destroy() {
         if (this._input !== undefined) {
             if (!globalThis.HAVE_GNOME)
@@ -369,6 +626,9 @@ const MousepadPlugin = GObject.registerClass({
 
         if (this._dialog !== undefined)
             this._dialog.destroy();
+
+        if (this._screenshareDialog !== undefined)
+            this._screenshareDialog.destroy();
 
         this.settings.disconnect(this._shareControlChangedId);
 

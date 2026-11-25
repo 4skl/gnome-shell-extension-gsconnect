@@ -472,3 +472,343 @@ export const InputDialog = GObject.registerClass({
         return true;
     }
 });
+
+export const ScreenSharingDialog = GObject.registerClass({
+    GTypeName: 'GSConnectMousepadScreenSharingDialog',
+    Properties: {
+        'device': GObject.ParamSpec.object(
+            'device',
+            'Device',
+            'The device associated with this window',
+            GObject.ParamFlags.READWRITE,
+            GObject.Object
+        ),
+        'plugin': GObject.ParamSpec.object(
+            'plugin',
+            'Plugin',
+            'The mousepad plugin associated with this window',
+            GObject.ParamFlags.READWRITE,
+            GObject.Object
+        ),
+    },
+    Template: 'resource:///org/gnome/Shell/Extensions/GSConnect/ui/mousepad-screen-sharing-dialog.ui',
+    Children: [
+        'scrolled-window', 'viewport', 'screen-eventbox', 'screen-image',
+        'zoom-in-button', 'zoom-out-button', 'zoom-reset-button',
+        'statusbar', 'screen-drag', 'scroll-controller'
+    ],
+}, class ScreenSharingDialog extends Gtk.Dialog {
+
+    _init(params) {
+        super._init(Object.assign({
+            use_header_bar: true,
+        }, params));
+
+        const headerbar = this.get_titlebar();
+        headerbar.title = _('Screen Sharing');
+        headerbar.subtitle = this.device.name;
+
+        // Main Box
+        const content = this.get_content_area();
+        content.border_width = 0;
+
+        // Initialize screen sharing state
+        this._isScreenSharing = false;
+        this._zoomLevel = 1.0;
+        this._panX = 0;
+        this._panY = 0;
+        this._lastPanX = 0;
+        this._lastPanY = 0;
+        this._imageWidth = 0;
+        this._imageHeight = 0;
+        
+        // Set up drag gesture for panning
+        this.screen_drag.connect('begin', this._onScreenDragBegin.bind(this));
+        this.screen_drag.connect('drag-update', this._onScreenDragUpdate.bind(this));
+        this.screen_drag.connect('end', this._onScreenDragEnd.bind(this));
+        
+        // Set up scroll controller for zooming
+        this.scroll_controller.connect('scroll', this._onScroll.bind(this));
+        
+        // Connect zoom buttons
+        this.zoom_in_button.connect('clicked', this._onZoomInClicked.bind(this));
+        this.zoom_out_button.connect('clicked', this._onZoomOutClicked.bind(this));
+        this.zoom_reset_button.connect('clicked', this._onZoomResetClicked.bind(this));
+
+        this.show_all();
+    }
+
+    /**
+     * Handle incoming screen data from the device
+     */
+    handleScreenData(imageData) {
+        if (!this._isScreenSharing) {
+            return;
+        }
+        
+        try {
+            // Create a GdkPixbuf from the image data
+            const pixbuf = Gdk.Pixbuf.new_from_data(
+                imageData,
+                Gdk.Colorspace.RGB,
+                true, // has_alpha
+                8,    // bits_per_sample
+                1920, // width (we'll need to adjust this based on actual size)
+                1080, // height (we'll need to adjust this based on actual size)
+                4 * 1920 // rowstride (width * 4 bytes per pixel)
+            );
+            
+            // Set the image in the dialog
+            this.screen_image.set_from_pixbuf(pixbuf);
+            
+            // Update image dimensions
+            this._imageWidth = pixbuf.get_width();
+            this._imageHeight = pixbuf.get_height();
+            
+            // Reset zoom and pan when new image is loaded
+            this._resetZoomAndPan();
+            
+        } catch (error) {
+            logError(error, 'Failed to process screen data');
+        }
+    }
+
+    /**
+     * Handle pointer position updates from the device
+     */
+    handlePointerPosition(x, y) {
+        if (!this._isScreenSharing) {
+            return;
+        }
+        
+        // Update status bar with pointer position
+        const statusContextId = this.statusbar.get_context_id('pointer-position');
+        this.statusbar.pop(statusContextId);
+        this.statusbar.push(statusContextId, `Pointer: ${x}, ${y}`);
+    }
+
+    /**
+     * Start screen sharing mode
+     */
+    startScreenSharing() {
+        this._isScreenSharing = true;
+        this._zoomLevel = 1.0;
+        this._panX = 0;
+        this._panY = 0;
+        
+        // Show status message
+        const statusContextId = this.statusbar.get_context_id('screen-sharing');
+        this.statusbar.pop(statusContextId);
+        this.statusbar.push(statusContextId, _('Screen sharing active'));
+    }
+
+    /**
+     * Stop screen sharing mode
+     */
+    stopScreenSharing() {
+        this._isScreenSharing = false;
+        this._zoomLevel = 1.0;
+        this._panX = 0;
+        this._panY = 0;
+        
+        // Clear image
+        this.screen_image.clear();
+        
+        // Show status message
+        const statusContextId = this.statusbar.get_context_id('screen-sharing');
+        this.statusbar.pop(statusContextId);
+        this.statusbar.push(statusContextId, _('Screen sharing stopped'));
+    }
+
+    /**
+     * Reset zoom and pan to initial state
+     */
+    _resetZoomAndPan() {
+        this._zoomLevel = 1.0;
+        this._panX = 0;
+        this._panY = 0;
+        
+        // Update UI elements if needed
+        this._updateZoomStatus();
+    }
+
+    /**
+     * Zoom in
+     */
+    _onZoomInClicked(button) {
+        if (!this._isScreenSharing) {
+            return;
+        }
+        
+        this._zoomLevel = Math.min(this._zoomLevel + 0.25, 4.0); // Max zoom 4x
+        this._applyZoom();
+        this._updateZoomStatus();
+    }
+
+    /**
+     * Zoom out
+     */
+    _onZoomOutClicked(button) {
+        if (!this._isScreenSharing) {
+            return;
+        }
+        
+        this._zoomLevel = Math.max(this._zoomLevel - 0.25, 0.25); // Min zoom 0.25x
+        this._applyZoom();
+        this._updateZoomStatus();
+    }
+
+    /**
+     * Reset zoom
+     */
+    _onZoomResetClicked(button) {
+        if (!this._isScreenSharing) {
+            return;
+        }
+        
+        this._resetZoomAndPan();
+        this._applyZoom();
+        this._updateZoomStatus();
+    }
+
+    /**
+     * Apply current zoom level to the display
+     */
+    _applyZoom() {
+        if (!this._isScreenSharing || !this.screen_image.get_pixbuf()) {
+            return;
+        }
+        
+        const pixbuf = this.screen_image.get_pixbuf();
+        const originalWidth = pixbuf.get_width();
+        const originalHeight = pixbuf.get_height();
+        
+        const scaledWidth = Math.round(originalWidth * this._zoomLevel);
+        const scaledHeight = Math.round(originalHeight * this._zoomLevel);
+        
+        // Create a new pixbuf with scaled dimensions
+        const scaledPixbuf = pixbuf.scale_simple(
+            scaledWidth,
+            scaledHeight,
+            Gdk.InterpType.BILINEAR
+        );
+        
+        // Update the image
+        this.screen_image.set_from_pixbuf(scaledPixbuf);
+        
+        // Adjust viewport to show the center of the image
+        this._adjustViewport();
+    }
+
+    /**
+     * Adjust the viewport to show the current pan position
+     */
+    _adjustViewport() {
+        if (!this._isScreenSharing || !this.screen_image.get_pixbuf()) {
+            return;
+        }
+        
+        const scrolledWindow = this.scrolled_window;
+        const adjustmentX = scrolledWindow.get_hadjustment();
+        const adjustmentY = scrolledWindow.get_vadjustment();
+        
+        const windowWidth = scrolledWindow.get_allocated_width();
+        const windowHeight = scrolledWindow.get_allocated_height();
+        
+        const pixbuf = this.screen_image.get_pixbuf();
+        const imageWidth = pixbuf.get_width();
+        const imageHeight = pixbuf.get_height();
+        
+        // Calculate scroll positions
+        const centerX = (imageWidth - windowWidth) / 2;
+        const centerY = (imageHeight - windowHeight) / 2;
+        
+        // Apply panning offset
+        const scrollX = Math.max(0, Math.min(centerX + this._panX, imageWidth - windowWidth));
+        const scrollY = Math.max(0, Math.min(centerY + this._panY, imageHeight - windowHeight));
+        
+        // Set scroll positions
+        adjustmentX.set_value(scrollX);
+        adjustmentY.set_value(scrollY);
+    }
+
+    /**
+     * Update zoom status in the status bar
+     */
+    _updateZoomStatus() {
+        const statusContextId = this.statusbar.get_context_id('zoom-level');
+        this.statusbar.pop(statusContextId);
+        this.statusbar.push(statusContextId, `Zoom: ${Math.round(this._zoomLevel * 100)}%`);
+    }
+
+    /**
+     * Handle drag begin for panning
+     */
+    _onScreenDragBegin(gesture) {
+        if (!this._isScreenSharing) {
+            return;
+        }
+        
+        const [, startX, startY] = gesture.get_start_point();
+        this._lastPanX = startX;
+        this._lastPanY = startY;
+    }
+
+    /**
+     * Handle drag update for panning
+     */
+    _onScreenDragUpdate(gesture) {
+        if (!this._isScreenSharing) {
+            return;
+        }
+        
+        const [, currentX, currentY] = gesture.get_offset();
+        const deltaX = currentX - this._lastPanX;
+        const deltaY = currentY - this._lastPanY;
+        
+        this._panX -= deltaX;
+        this._panY -= deltaY;
+        
+        // Update the viewport with new pan position
+        this._adjustViewport();
+        
+        this._lastPanX = currentX;
+        this._lastPanY = currentY;
+    }
+
+    /**
+     * Handle drag end for panning
+     */
+    _onScreenDragEnd(gesture) {
+        // Nothing special needed here
+    }
+
+    /**
+     * Handle scroll events for zooming
+     */
+    _onScroll(controller, delta_x, delta_y) {
+        if (!this._isScreenSharing) {
+            return;
+        }
+        
+        // Zoom in/out based on scroll direction
+        if (delta_y < 0) {
+            this._zoomLevel = Math.min(this._zoomLevel + 0.1, 4.0); // Zoom in
+        } else if (delta_y > 0) {
+            this._zoomLevel = Math.max(this._zoomLevel - 0.1, 0.25); // Zoom out
+        }
+        
+        this._applyZoom();
+        this._updateZoomStatus();
+    }
+
+    vfunc_delete_event(event) {
+        this.stopScreenSharing();
+        return this.hide_on_delete();
+    }
+
+    destroy() {
+        this.stopScreenSharing();
+        super.destroy();
+    }
+});
