@@ -259,6 +259,63 @@ SPDX-License-Identifier: GPL-2.0-or-later
                               </object>
                             </child>
                             <child>
+                              <object class="GtkListBoxRow" id="mousepad-screenshare">
+                                <property name="height_request">56</property>
+                                <property name="visible">True</property>
+                                <property name="can_focus">True</property>
+                                <property name="selectable">False</property>
+                                <child>
+                                  <object class="GtkGrid">
+                                    <property name="visible">True</property>
+                                    <property name="can_focus">False</property>
+                                    <property name="margin_start">12</property>
+                                    <property name="margin_end">12</property>
+                                    <property name="column_spacing">12</property>
+                                    <child>
+                                      <object class="GtkLabel" id="share-screen-label">
+                                        <property name="visible">True</property>
+                                        <property name="can_focus">False</property>
+                                        <property name="halign">start</property>
+                                        <property name="valign">center</property>
+                                        <property name="hexpand">True</property>
+                                        <property name="vexpand">True</property>
+                                        <property name="label" translatable="yes">Screen Sharing</property>
+                                        <accessibility>
+                                          <relation type="label-for" target="mousepad-screenshare"/>
+                                          <relation type="label-for" target="share-screen"/>
+                                        </accessibility>
+                                      </object>
+                                      <packing>
+                                        <property name="left_attach">0</property>
+                                        <property name="top_attach">0</property>
+                                      </packing>
+                                    </child>
+                                    <child>
+                                      <object class="GtkSwitch" id="share-screen">
+                                        <property name="visible">True</property>
+                                        <property name="can_focus">True</property>
+                                        <property name="halign">end</property>
+                                        <property name="valign">center</property>
+                                        <property name="action_name">settings.share-screen</property>
+                                        <accessibility>
+                                          <relation type="controlled-by" target="mousepad-screenshare"/>
+                                          <relation type="labelled-by" target="share-screen-label"/>
+                                        </accessibility>
+                                      </object>
+                                      <packing>
+                                        <property name="left_attach">1</property>
+                                        <property name="top_attach">0</property>
+                                      </packing>
+                                    </child>
+                                  </object>
+                                </child>
+                                <accessibility>
+                                  <relation type="controller-for" target="share-screen"/>
+                                  <relation type="labelled-by" target="share-screen-label"/>
+                                </accessibility>
+                              </object>
+                            </child>
+                            <child>
                               <object class="GtkListBoxRow" id="systemvolume">
                                 <property name="height_request">56</property>
                                 <property name="visible">True</property>

@@ -265,7 +265,8 @@ export const Panel = GObject.registerClass({
 
         // Sharing
         'sharing', 'sharing-page',
-        'desktop-list', 'clipboard', 'clipboard-sync', 'mousepad', 'mpris', 'systemvolume',
+        'desktop-list', 'clipboard', 'clipboard-sync', 'mousepad',
+        'mousepad-screenshare', 'mpris', 'systemvolume',
         'share', 'share-list', 'receive-files', 'receive-directory',
         'links', 'links-list', 'launch-urls',
 
@@ -455,6 +456,7 @@ export const Panel = GObject.registerClass({
 
         settings = this.pluginSettings('mousepad');
         this.actions.add_action(settings.create_action('share-control'));
+        this.actions.add_action(settings.create_action('share-screen'));
 
         settings = this.pluginSettings('mpris');
         this.actions.add_action(settings.create_action('share-players'));
@@ -515,7 +517,14 @@ export const Panel = GObject.registerClass({
         // Visibility
         this.desktop_list.foreach(row => {
             const name = row.get_name();
-            row.visible = this.get_outgoing_supported(`${name}.request`);
+
+            if (name === 'mousepad-screenshare') {
+                row.visible = this.get_outgoing_supported('mousepad.request') ||
+                    this.get_incoming_supported('presenter') ||
+                    this.get_outgoing_supported('presenter');
+            } else {
+                row.visible = this.get_outgoing_supported(`${name}.request`);
+            }
         });
 
         // Separators & Sorting
@@ -1078,6 +1087,9 @@ export const Panel = GObject.registerClass({
 
         if (this.hasOwnProperty(name))
             this[name].visible = row.widget.active;
+
+        if (name === 'mousepad')
+            this.mousepad_screenshare.visible = row.widget.active;
 
         this.plugin_list.add(row);
     }

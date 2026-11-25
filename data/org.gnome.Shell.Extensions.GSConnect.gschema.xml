@@ -62,7 +62,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
       <default>{}</default>
     </key>
     <key name="menu-actions" type="as">
-      <default>["sms", "ring", "mount", "commands", "share", "keyboard"]</default>
+      <default>["sms", "ring", "mount", "commands", "share", "keyboard", "screenShare"]</default>
     </key>
     <key name="name" type="s">
       <default>""</default>
@@ -126,6 +126,13 @@ SPDX-License-Identifier: GPL-2.0-or-later
   <schema id="org.gnome.Shell.Extensions.GSConnect.Plugin.Mousepad">
     <key name="share-control" type="b">
       <default>true</default>
+      <summary>Share Control</summary>
+      <description>Allow the remote device to control the mouse and keyboard</description>
+    </key>
+    <key name="share-screen" type="b">
+      <default>false</default>
+      <summary>Screen Sharing</summary>
+      <description>Allow screen sharing with this device</description>
     </key>
   </schema>
   <schema id="org.gnome.Shell.Extensions.GSConnect.Plugin.MPRIS">
@@ -195,4 +202,3 @@ SPDX-License-Identifier: GPL-2.0-or-later
     </key>
   </schema>
 </schemalist>
-

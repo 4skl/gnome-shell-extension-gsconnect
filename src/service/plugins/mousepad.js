@@ -2,12 +2,26 @@
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
 import Gdk from 'gi://Gdk';
 import GObject from 'gi://GObject';
+import Gst from 'gi://Gst';
+import GstApp from 'gi://GstApp';
 
 import * as Components from '../components/index.js';
 import {InputDialog} from '../ui/mousepad.js';
 import Plugin from '../plugin.js';
+
+Gst.init(null);
+
+const SCREENSHARE_FPS = 5;
+const SCREENSHARE_JPEG_QUALITY = 65;
+const PORTAL_BUS_NAME = 'org.freedesktop.portal.Desktop';
+const PORTAL_OBJECT_PATH = '/org/freedesktop/portal/desktop';
+const SCREENCAST_IFACE = 'org.freedesktop.portal.ScreenCast';
+const REQUEST_IFACE = 'org.freedesktop.portal.Request';
+const SESSION_IFACE = 'org.freedesktop.portal.Session';
 
 
 export const Metadata = {
@@ -18,13 +32,13 @@ export const Metadata = {
         'kdeconnect.mousepad.echo',
         'kdeconnect.mousepad.request',
         'kdeconnect.mousepad.keyboardstate',
-        'kdeconnect.presenter',
+        'kdeconnect.mousepad.screenshare',
     ],
     outgoingCapabilities: [
         'kdeconnect.mousepad.echo',
         'kdeconnect.mousepad.request',
         'kdeconnect.mousepad.keyboardstate',
-        'kdeconnect.presenter',
+        'kdeconnect.mousepad.screenshare',
     ],
     actions: {
         keyboard: {
@@ -37,6 +51,14 @@ export const Metadata = {
                 'kdeconnect.mousepad.keyboardstate',
             ],
             outgoing: ['kdeconnect.mousepad.request'],
+        },
+        screenShare: {
+            label: _('Screen Sharing'),
+            icon_name: 'preferences-desktop-remote-desktop-symbolic',
+
+            parameter_type: null,
+            incoming: [],
+            outgoing: [],
         },
     },
 };
@@ -117,8 +139,6 @@ const KeyMapCodes = new Map([
 /**
  * Mousepad Plugin
  * https://github.com/KDE/kdeconnect-kde/tree/master/plugins/mousepad
- *
- * TODO: support outgoing mouse events?
  */
 const MousepadPlugin = GObject.registerClass({
     GTypeName: 'GSConnectMousepadPlugin',
@@ -151,13 +171,20 @@ const MousepadPlugin = GObject.registerClass({
             'changed::share-control',
             this._sendState.bind(this)
         );
-        
+
+        this._shareScreenChangedId = this.settings.connect(
+            'changed::share-screen',
+            () => {
+                if (!this.settings.get_boolean('share-screen') && this._screenshare)
+                    this._stopScreenSharing();
+            }
+        );
+
         this._screenshare = false;
-        this._screenTexture = null;
-        this._screenshareDialog = null;
-        this._screenShareZoom = 1.0;
-        this._screenSharePanX = 0;
-        this._screenSharePanY = 0;
+        this._screenShareTimerId = 0;
+        this._pipeline = null;
+        this._appsink = null;
+        this._portalSessionPath = null;
     }
 
     get state() {
@@ -182,8 +209,7 @@ const MousepadPlugin = GObject.registerClass({
 
         this._state = false;
         this.notify('state');
-        this._screenshare = false;
-        this.notify('screenshare');
+        this._stopScreenSharing(false);
     }
 
     handlePacket(packet) {
@@ -199,9 +225,9 @@ const MousepadPlugin = GObject.registerClass({
             case 'kdeconnect.mousepad.keyboardstate':
                 this._handleState(packet);
                 break;
-                
-            case 'kdeconnect.presenter':
-                this._handlePresenterPacket(packet.body);
+
+            case 'kdeconnect.mousepad.screenshare':
+                this._handleScreenSharePacket(packet.body);
                 break;
         }
     }
@@ -219,8 +245,6 @@ const MousepadPlugin = GObject.registerClass({
         let modifiers = 0;
         const modifiers_codes = [];
 
-        // These are ordered, as much as possible, to create the shortest code
-        // path for high-frequency, low-latency events (eg. mouse movement)
         switch (true) {
             case input.hasOwnProperty('scroll'):
                 this._input.scrollPointer(input.dx, input.dy);
@@ -231,11 +255,9 @@ const MousepadPlugin = GObject.registerClass({
                 break;
 
             case (input.hasOwnProperty('key') || input.hasOwnProperty('specialKey')):
-                // NOTE: \u0000 sometimes sent in advance of a specialKey packet
                 if (input.key && input.key === '\u0000')
                     return;
 
-                // Modifiers
                 if (input.alt) {
                     modifiers |= Gdk.ModifierType.MOD1_MASK;
                     modifiers_codes.push(56);
@@ -256,7 +278,6 @@ const MousepadPlugin = GObject.registerClass({
                     modifiers_codes.push(125);
                 }
 
-                // Regular key (printable ASCII or Unicode)
                 if (input.key) {
                     if (!globalThis.HAVE_GNOME)
                         this._input.pressKeys(input.key, modifiers_codes);
@@ -264,8 +285,6 @@ const MousepadPlugin = GObject.registerClass({
                         this._input.pressKeys(input.key, modifiers);
 
                     this._sendEcho(input);
-
-                // Special key (eg. non-printable ASCII)
                 } else if (input.specialKey && KeyMap.has(input.specialKey)) {
                     if (!globalThis.HAVE_GNOME) {
                         keysym = KeyMapCodes.get(input.specialKey);
@@ -309,7 +328,7 @@ const MousepadPlugin = GObject.registerClass({
     }
 
     /**
-     * Handle an echo/ACK of a event we sent, displaying it the dialog entry.
+     * Handle an echo/ACK of an event we sent, displaying it in the dialog entry.
      *
      * @param {object} input - The body of a `kdeconnect.mousepad.echo`
      */
@@ -317,7 +336,6 @@ const MousepadPlugin = GObject.registerClass({
         if (!this._dialog || !this._dialog.visible)
             return;
 
-        // Skip modifiers
         if (input.alt || input.ctrl || input.super)
             return;
 
@@ -331,146 +349,21 @@ const MousepadPlugin = GObject.registerClass({
     }
 
     /**
-     * Handle a presenter packet for screen sharing
+     * Handle incoming screen share control packets from the mobile device
      *
-     * @param {object} body - The body of a `kdeconnect.presenter` packet
+     * @param {object} body - The body of a `kdeconnect.mousepad.screenshare` packet
      */
-    _handlePresenterPacket(body) {
-        if (body.hasOwnProperty('screenData')) {
-            // Handle screen data (image)
-            this._handleScreenData(body.screenData);
-        } else if (body.hasOwnProperty('pointerPosition')) {
-            // Handle pointer movement
-            this._handlePointerPosition(body.pointerPosition);
-        } else if (body.hasOwnProperty('zoom')) {
-            // Handle zoom changes
-            this._handleZoom(body.zoom);
-        } else if (body.hasOwnProperty('pan')) {
-            // Handle panning
-            this._handlePan(body.pan);
-        } else if (body.hasOwnProperty('startScreenShare')) {
-            // Start screen sharing mode
-            this._startScreenShare();
-        } else if (body.hasOwnProperty('stopScreenShare')) {
-            // Stop screen sharing mode
-            this._stopScreenShare();
-        }
-    }
+    _handleScreenSharePacket(body) {
+        if (!this.settings.get_boolean('share-screen'))
+            return;
 
-    /**
-     * Handle screen data (image)
-     *
-     * @param {string} screenData - Base64 encoded screen image
-     */
-    _handleScreenData(screenData) {
-        // This method will be called when screen data arrives
-        // We need to update the screen sharing dialog with the new image
-        if (this._screenshareDialog !== undefined && this._screenshare) {
-            // Decode base64 screen data if needed
-            let imageData;
-            
-            // Check if screenData is a base64 string that needs decoding
-            if (typeof screenData === 'string' && screenData.startsWith('data:image')) {
-                // Extract base64 data from data URL
-                const base64Data = screenData.split(',')[1];
-                imageData = GLib.base64_decode(base64Data);
-            } else if (typeof screenData === 'string') {
-                // Assume it's base64 encoded data
-                try {
-                    imageData = GLib.base64_decode(screenData);
-                } catch (e) {
-                    // If decoding fails, treat as raw data
-                    imageData = screenData;
-                }
-            } else {
-                // Already decoded data
-                imageData = screenData;
-            }
-            
-            // Update the screen image in the dialog
-            this._screenshareDialog.handleScreenData(imageData);
-        }
-    }
-
-    /**
-     * Handle pointer position updates
-     *
-     * @param {object} position - Pointer position data
-     */
-    _handlePointerPosition(position) {
-        // Handle pointer movement for screen sharing
-        if (this._screenshareDialog && this._screenshareDialog.pointer) {
-            // Update pointer position in the dialog
-            this._screenshareDialog.pointer.x = position.x;
-            this._screenshareDialog.pointer.y = position.y;
-        }
-    }
-
-    /**
-     * Handle zoom changes
-     *
-     * @param {number} zoom - Zoom level
-     */
-    _handleZoom(zoom) {
-        this._screenShareZoom = zoom;
-        if (this._screenshareDialog) {
-            // Update zoom in the dialog
-            this._screenshareDialog.updateZoom(zoom);
-        }
-    }
-
-    /**
-     * Handle panning
-     *
-     * @param {object} pan - Pan coordinates
-     */
-    _handlePan(pan) {
-        this._screenSharePanX = pan.x;
-        this._screenSharePanY = pan.y;
-        if (this._screenshareDialog) {
-            // Update pan in the dialog
-            this._screenshareDialog.updatePan(pan.x, pan.y);
-        }
-    }
-
-    /**
-     * Start screen sharing mode
-     */
-    _startScreenShare() {
-        this._screenshare = true;
-        this.notify('screenshare');
-        // Open screen sharing dialog
-        this._openScreenShareDialog();
-    }
-
-    /**
-     * Stop screen sharing mode
-     */
-    _stopScreenShare() {
-        this._screenshare = false;
-        this.notify('screenshare');
-        // Close screen sharing dialog
-        this._closeScreenShareDialog();
-    }
-
-    /**
-     * Open the screen sharing dialog
-     */
-    _openScreenShareDialog() {
-        if (this._screenshareDialog === undefined) {
-            this._createScreenSharingDialog();
-        }
-
-        this._screenshareDialog.present();
-    }
-
-    /**
-     * Close the screen sharing dialog
-     */
-    _closeScreenShareDialog() {
-        if (this._screenshareDialog !== undefined) {
-            this._screenshareDialog.destroy();
-            this._screenshareDialog = undefined;
+        if (body.switchScreen) {
+            this._stopScreenSharing(false);
+            this._startScreenSharing();
+        } else if (body.startScreenShare) {
+            this._startScreenSharing();
+        } else if (body.stopScreenShare || body.stop) {
+            this._stopScreenSharing(false);
         }
     }
 
@@ -519,104 +412,256 @@ const MousepadPlugin = GObject.registerClass({
     }
 
     /**
-     * Start screen sharing mode
+     * Toggle PC -> Phone screen sharing from the device menu
      */
-    _startScreenSharing() {
-        if (!this._screenshare) {
-            this._screenshare = true;
-            
-            // Create or show the screen sharing dialog
-            if (this._screenshareDialog === undefined) {
-                this._createScreenSharingDialog();
-            } else {
-                this._screenshareDialog.present();
-            }
-            
-            // Send a request to start screen sharing on the device
-            this._sendScreenShareRequest();
+    screenShare() {
+        if (this._screenshare)
+            this._stopScreenSharing();
+        else
+            this._startScreenSharing();
+    }
+
+    /**
+     * Helper to call an XDG Portal method and await its Response signal
+     */
+    _portalRequest(method, signature, prefixArgs, options) {
+        return new Promise((resolve, reject) => {
+            const token = `gsconnect_${GLib.random_int_range(100000, 999999)}`;
+            const sender = Gio.DBus.session.get_unique_name().slice(1).replace(/\./g, '_');
+            const requestPath = `/org/freedesktop/portal/desktop/request/${sender}/${token}`;
+
+            options.handle_token = new GLib.Variant('s', token);
+
+            const subId = Gio.DBus.session.signal_subscribe(
+                PORTAL_BUS_NAME,
+                REQUEST_IFACE,
+                'Response',
+                requestPath,
+                null,
+                Gio.DBusSignalFlags.NO_MATCH_RULE,
+                (_conn, _sender, _path, _iface, _signal, params) => {
+                    Gio.DBus.session.signal_unsubscribe(subId);
+                    const [response, results] = params.deepUnpack();
+                    if (response === 0)
+                        resolve(results);
+                    else
+                        reject(new Error(`Portal ${method} cancelled or failed (${response})`));
+                }
+            );
+
+            Gio.DBus.session.call(
+                PORTAL_BUS_NAME,
+                PORTAL_OBJECT_PATH,
+                SCREENCAST_IFACE,
+                method,
+                new GLib.Variant(signature, [...prefixArgs, options]),
+                new GLib.VariantType('(o)'),
+                Gio.DBusCallFlags.NONE,
+                -1,
+                null,
+                (conn, res) => {
+                    try {
+                        conn.call_finish(res);
+                    } catch (e) {
+                        Gio.DBus.session.signal_unsubscribe(subId);
+                        reject(e);
+                    }
+                }
+            );
+        });
+    }
+
+    /**
+     * Start capturing and streaming the desktop via XDG ScreenCast Portal + GStreamer
+     */
+    async _startScreenSharing() {
+        if (!this.settings.get_boolean('share-screen') || this._screenshare)
+            return;
+
+        this._screenshare = true;
+        this.notify('screenshare');
+
+        try {
+            // 1. Create Portal Session
+            const sessionToken = `gsconnect_sess_${GLib.random_int_range(100000, 999999)}`;
+            const createRes = await this._portalRequest(
+                'CreateSession',
+                '(a{sv})',
+                [],
+                {session_handle_token: new GLib.Variant('s', sessionToken)}
+            );
+            this._portalSessionPath = createRes.session_handle.deepUnpack();
+
+            // 2. Select Sources (type: 1 = Monitor, cursor_mode: 2 = Embedded)
+            await this._portalRequest(
+                'SelectSources',
+                '(oa{sv})',
+                [this._portalSessionPath],
+                {
+                    types: new GLib.Variant('u', 1),
+                    cursor_mode: new GLib.Variant('u', 2),
+                }
+            );
+
+            // 3. Start Session (opens GNOME's native screen-sharing dialog)
+            const startRes = await this._portalRequest(
+                'Start',
+                '(osa{sv})',
+                [this._portalSessionPath, ''],
+                {}
+            );
+
+            const streams = startRes.streams.deepUnpack();
+            if (!streams.length)
+                throw new Error('No screen stream selected');
+
+            const nodeId = streams[0][0];
+
+            // 4. Open PipeWire Remote FD
+            const [fdReply, fdList] = await new Promise((resolve, reject) => {
+                Gio.DBus.session.call_with_unix_fd_list(
+                    PORTAL_BUS_NAME,
+                    PORTAL_OBJECT_PATH,
+                    SCREENCAST_IFACE,
+                    'OpenPipeWireRemote',
+                    new GLib.Variant('(oa{sv})', [this._portalSessionPath, {}]),
+                    new GLib.VariantType('(h)'),
+                    Gio.DBusCallFlags.NONE,
+                    -1,
+                    null,
+                    null,
+                    (conn, res) => {
+                        try {
+                            resolve(conn.call_with_unix_fd_list_finish(res));
+                        } catch (e) {
+                            reject(e);
+                        }
+                    }
+                );
+            });
+
+            const fdIndex = fdReply.deepUnpack()[0];
+            const pwFd = fdList.steal_fds()[fdIndex];
+
+            if (!this._screenshare)
+                return;
+
+            // 5. Build and start GStreamer pipeline (force I420 for jpegenc)
+            const pipelineDesc =
+                `pipewiresrc fd=${pwFd} path=${nodeId} do-timestamp=true ! ` +
+                `videorate ! video/x-raw,framerate=${SCREENSHARE_FPS}/1 ! ` +
+                `videoconvert ! video/x-raw,format=I420 ! ` +
+                `jpegenc quality=${SCREENSHARE_JPEG_QUALITY} ! ` +
+                `appsink name=sink max-buffers=1 drop=true sync=false`;
+
+            this._pipeline = Gst.parse_launch(pipelineDesc);
+            this._appsink = this._pipeline.get_by_name('sink');
+            this._pipeline.set_state(Gst.State.PLAYING);
+
+            this.device.sendPacket({
+                type: 'kdeconnect.mousepad.screenshare',
+                body: {startScreenShare: true},
+            });
+
+            // 6. Poll appsink on the main loop and send frames
+            const intervalMs = Math.round(1000 / SCREENSHARE_FPS);
+            this._screenShareTimerId = GLib.timeout_add(
+                GLib.PRIORITY_DEFAULT,
+                intervalMs,
+                () => {
+                    if (!this._screenshare || !this._appsink)
+                        return GLib.SOURCE_REMOVE;
+
+                    this._pullAndSendFrame();
+                    return GLib.SOURCE_CONTINUE;
+                }
+            );
+        } catch (e) {
+            logError(e, 'Screen sharing failed to start');
+            this._stopScreenSharing(false);
         }
     }
 
     /**
-     * Stop screen sharing mode
+     * Pull the latest JPEG frame from GStreamer appsink and send it
      */
-    _stopScreenSharing() {
-        if (this._screenshare) {
-            this._screenshare = false;
-            
-            if (this._screenshareDialog !== undefined) {
-                this._screenshareDialog.destroy();
-                this._screenshareDialog = undefined;
+    _pullAndSendFrame() {
+        const sample = this._appsink.try_pull_sample(0);
+        if (!sample)
+            return;
+
+        const buffer = sample.get_buffer();
+        const caps = sample.get_caps();
+        const structure = caps ? caps.get_structure(0) : null;
+        const width = structure ? structure.get_int('width')[1] : 0;
+        const height = structure ? structure.get_int('height')[1] : 0;
+
+        const [ok, mapInfo] = buffer.map(Gst.MapFlags.READ);
+        if (ok) {
+            try {
+                this.device.sendPacket({
+                    type: 'kdeconnect.mousepad.screenshare',
+                    body: {
+                        screenData: GLib.base64_encode(mapInfo.data),
+                        format: 'jpeg',
+                        width,
+                        height,
+                    },
+                });
+            } finally {
+                buffer.unmap(mapInfo);
             }
-            
-            // Send a stop signal to the device
+        }
+    }
+
+    /**
+     * Stop GStreamer pipeline, close Portal session, and notify the device
+     */
+    _stopScreenSharing(notifyDevice = true) {
+        if (this._screenShareTimerId !== 0) {
+            GLib.Source.remove(this._screenShareTimerId);
+            this._screenShareTimerId = 0;
+        }
+
+        if (this._pipeline !== null) {
+            this._pipeline.set_state(Gst.State.NULL);
+            this._pipeline = null;
+            this._appsink = null;
+        }
+
+        if (this._portalSessionPath !== null) {
+            Gio.DBus.session.call(
+                PORTAL_BUS_NAME,
+                this._portalSessionPath,
+                SESSION_IFACE,
+                'Close',
+                null,
+                null,
+                Gio.DBusCallFlags.NONE,
+                -1,
+                null,
+                null
+            );
+            this._portalSessionPath = null;
+        }
+
+        if (!this._screenshare)
+            return;
+
+        this._screenshare = false;
+        this.notify('screenshare');
+
+        if (notifyDevice) {
             this.device.sendPacket({
-                type: 'kdeconnect.presenter',
-                body: {
-                    stop: true
-                }
+                type: 'kdeconnect.mousepad.screenshare',
+                body: {stopScreenShare: true},
             });
         }
     }
 
-    /**
-     * Create the screen sharing dialog
-     */
-    _createScreenSharingDialog() {
-        // This is a placeholder - actual implementation would create the UI
-        // For now, we'll just initialize the dialog reference
-        this._screenshareDialog = new ScreenSharingDialog({
-            device: this.device,
-            plugin: this,
-        });
-    }
-
-    /**
-     * Update the screen image in the dialog
-     */
-    _updateScreenImage(screenData) {
-        // This method will be implemented when the actual UI is created
-        // It should update the displayed image with the new screen data
-    }
-
-    /**
-     * Update pointer position on the screen
-     */
-    _updatePointerPosition(dx, dy) {
-        // This method will be implemented when the actual UI is created
-        // It should update the pointer position on the screen display
-    }
-
-    /**
-     * Update zoom level
-     */
-    _updateZoomLevel(zoom) {
-        // This method will be implemented when the actual UI is created
-        // It should adjust the zoom level of the screen display
-    }
-
-    /**
-     * Update pan position
-     */
-    _updatePanPosition(panX, panY) {
-        // This method will be implemented when the actual UI is created
-        // It should adjust the panning position of the screen display
-    }
-
-    /**
-     * Send screen sharing request to the device
-     */
-    _sendScreenShareRequest() {
-        // Request screen sharing from the device
-        this.device.sendPacket({
-            type: 'kdeconnect.presenter',
-            body: {
-                start: true
-            }
-        });
-    }
-
     destroy() {
+        this._stopScreenSharing(false);
+
         if (this._input !== undefined) {
             if (!globalThis.HAVE_GNOME)
                 this._input = Components.release('ydotool');
@@ -627,10 +672,8 @@ const MousepadPlugin = GObject.registerClass({
         if (this._dialog !== undefined)
             this._dialog.destroy();
 
-        if (this._screenshareDialog !== undefined)
-            this._screenshareDialog.destroy();
-
         this.settings.disconnect(this._shareControlChangedId);
+        this.settings.disconnect(this._shareScreenChangedId);
 
         super.destroy();
     }
