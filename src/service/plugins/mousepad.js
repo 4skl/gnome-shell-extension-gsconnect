@@ -331,6 +331,31 @@ const MousepadPlugin = GObject.registerClass({
         }
     }
 
+    _getTokenFile() {
+        const dir = GLib.build_filenamev([GLib.get_user_cache_dir(), 'gsconnect']);
+        GLib.mkdir_with_parents(dir, 0o700);
+        return GLib.build_filenamev([dir, `screenshare_token_${this.device.id}`]);
+    }
+
+    _loadRestoreToken() {
+        try {
+            const [ok, bytes] = GLib.file_get_contents(this._getTokenFile());
+            if (ok) {
+                const token = new TextDecoder().decode(bytes).trim();
+                return token.length > 0 ? token : null;
+            }
+        } catch {}
+        return null;
+    }
+
+    _saveRestoreToken(token) {
+        try {
+            GLib.file_set_contents(this._getTokenFile(), token);
+        } catch (e) {
+            logError(e, 'Failed to save screenshare restore token');
+        }
+    }
+
     _pollLiveCursorPosition() {
         if (this._shellPointerAvailable && !this._pollingPointer) {
             this._pollingPointer = true;
@@ -555,9 +580,9 @@ const MousepadPlugin = GObject.registerClass({
 
         if (body.switchScreen) {
             await this._stopScreenSharing(false);
-            this._startScreenSharing();
+            this._startScreenSharing(true);
         } else if (body.startScreenShare) {
-            this._startScreenSharing();
+            this._startScreenSharing(false);
         } else if (body.stopScreenShare || body.stop) {
             this._stopScreenSharing(false);
         }
@@ -596,7 +621,7 @@ const MousepadPlugin = GObject.registerClass({
         if (this._screenshare)
             this._stopScreenSharing();
         else
-            this._startScreenSharing();
+            this._startScreenSharing(false);
     }
 
     _portalRequest(method, signature, prefixArgs, options) {
@@ -635,7 +660,7 @@ const MousepadPlugin = GObject.registerClass({
         });
     }
 
-    async _startScreenSharing() {
+    async _startScreenSharing(forcePrompt = false) {
         if (!this.settings.get_boolean('share-screen') || this._screenshare || this._startingScreenShare)
             return;
 
@@ -653,14 +678,26 @@ const MousepadPlugin = GObject.registerClass({
             );
             this._portalSessionPath = createRes.session_handle.deepUnpack();
 
+            const selectOptions = {
+                types: new GLib.Variant('u', 1),
+                cursor_mode: new GLib.Variant('u', 2),
+                persist_mode: new GLib.Variant('u', 2),
+            };
+            const savedToken = forcePrompt ? null : this._loadRestoreToken();
+            if (savedToken)
+                selectOptions.restore_token = new GLib.Variant('s', savedToken);
+
             await this._portalRequest(
                 'SelectSources', '(oa{sv})', [this._portalSessionPath],
-                {types: new GLib.Variant('u', 1), cursor_mode: new GLib.Variant('u', 2)}
+                selectOptions
             );
 
             const startRes = await this._portalRequest(
                 'Start', '(osa{sv})', [this._portalSessionPath, ''], {}
             );
+
+            if (startRes.restore_token)
+                this._saveRestoreToken(startRes.restore_token.deepUnpack());
 
             const streams = startRes.streams.deepUnpack();
             if (!streams.length)
