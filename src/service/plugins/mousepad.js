@@ -578,6 +578,14 @@ const MousepadPlugin = GObject.registerClass({
 
         this._updateViewport(body);
 
+        // Store FPS and bitrate from the packet for use in _startScreenSharing
+        if (body.fps !== undefined) {
+            this._receivedFps = parseInt(body.fps);
+        }
+        if (body.bitrate !== undefined) {
+            this._receivedBitrate = parseInt(body.bitrate);
+        }
+
         if (body.switchScreen) {
             await this._stopScreenSharing(false);
             this._startScreenSharing(true);
@@ -749,15 +757,19 @@ const MousepadPlugin = GObject.registerClass({
 
             this._streamPixelSize = [...this._streamLogicalSize];
 
+            // Use received FPS and bitrate if available, otherwise fallback to defaults
+            const fps = this._receivedFps || SCREENSHARE_FPS;
+            const bitrate = this._receivedBitrate || SCREENSHARE_BITRATE_KBPS;
+
             const pipelineDesc =
                 `pipewiresrc fd=${pwFd} path=${nodeId} do-timestamp=true ! ` +
-                `videorate ! video/x-raw,framerate=${SCREENSHARE_FPS}/1 ! ` +
+                `videorate ! video/x-raw,framerate=${fps}/1 ! ` +
                 `videoconvert n-threads=0 ! video/x-raw,format=BGRx ! ` +
                 `videobox name=box fill=black ! ` +
                 `videoscale n-threads=0 method=bilinear ! video/x-raw,width=${outW},height=${outH} ! ` +
                 `videoconvert n-threads=0 ! video/x-raw,format=I420 ! ` +
                 `queue max-size-buffers=1 leaky=downstream ! ` +
-                `x264enc tune=zerolatency speed-preset=ultrafast bitrate=${SCREENSHARE_BITRATE_KBPS} ` +
+                `x264enc tune=zerolatency speed-preset=ultrafast bitrate=${bitrate} ` +
                 `intra-refresh=true sliced-threads=true vbv-buf-capacity=100 key-int-max=60 ! ` +
                 `h264parse config-interval=-1 ! ` +
                 `video/x-h264,stream-format=byte-stream,alignment=au ! ` +
@@ -938,6 +950,10 @@ const MousepadPlugin = GObject.registerClass({
         this._cropDirty = false;
         this._boxLeft = null;
         this._boxTop = null;
+
+        // Reset received FPS and bitrate to prevent stale values from being reused
+        this._receivedFps = null;
+        this._receivedBitrate = null;
 
         if (this._portalSessionPath !== null) {
             const path = this._portalSessionPath;
