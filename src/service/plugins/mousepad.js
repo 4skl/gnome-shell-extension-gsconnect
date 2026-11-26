@@ -427,7 +427,6 @@ const MousepadPlugin = GObject.registerClass({
         const [monWmm, monHmm] = this._monitorMm;
         const [viewWmm, viewHmm] = this._phoneViewMm;
 
-        // Dynamically compute exact 1:1 physical crop from PipeWire's real pixel dimensions
         let cropW = Math.round(streamW * (viewWmm / monWmm) * SCREENSHARE_ZOOM_OUT);
         let cropH = Math.round(streamH * (viewHmm / monHmm) * SCREENSHARE_ZOOM_OUT);
         cropW = Math.min(streamW, Math.max(64, cropW - (cropW % 2)));
@@ -716,15 +715,16 @@ const MousepadPlugin = GObject.registerClass({
             const pipelineDesc =
                 `pipewiresrc fd=${pwFd} path=${nodeId} do-timestamp=true ! ` +
                 `videorate ! video/x-raw,framerate=${SCREENSHARE_FPS}/1 ! ` +
-                `videoconvert ! video/x-raw,format=BGRx ! ` +
+                `videoconvert n-threads=0 ! video/x-raw,format=BGRx ! ` +
                 `videobox name=box fill=black ! ` +
-                `videoscale ! video/x-raw,width=${outW},height=${outH} ! ` +
-                `videoconvert ! video/x-raw,format=I420 ! ` +
+                `videoscale n-threads=0 method=bilinear ! video/x-raw,width=${outW},height=${outH} ! ` +
+                `videoconvert n-threads=0 ! video/x-raw,format=I420 ! ` +
                 `queue max-size-buffers=1 leaky=downstream ! ` +
-                `x264enc tune=zerolatency speed-preset=ultrafast bitrate=${SCREENSHARE_BITRATE_KBPS} key-int-max=30 ! ` +
+                `x264enc tune=zerolatency speed-preset=ultrafast bitrate=${SCREENSHARE_BITRATE_KBPS} ` +
+                `intra-refresh=true sliced-threads=true vbv-buf-capacity=100 key-int-max=60 ! ` +
                 `h264parse config-interval=-1 ! ` +
                 `video/x-h264,stream-format=byte-stream,alignment=au ! ` +
-                `appsink name=sink emit-signals=false max-buffers=10 drop=false sync=false`;
+                `appsink name=sink emit-signals=false max-buffers=2 drop=false sync=false`;
 
             this._pipeline = Gst.parse_launch(pipelineDesc);
             pwFd = -1;
@@ -750,6 +750,7 @@ const MousepadPlugin = GObject.registerClass({
                 });
             }
 
+            let pollTick = 0;
             this._screenShareTimerId = GLib.timeout_add(
                 GLib.PRIORITY_DEFAULT,
                 10,
@@ -758,7 +759,8 @@ const MousepadPlugin = GObject.registerClass({
                         this._screenShareTimerId = 0;
                         return GLib.SOURCE_REMOVE;
                     }
-                    this._pollLiveCursorPosition();
+                    if (++pollTick % 3 === 0)
+                        this._pollLiveCursorPosition();
                     this._pullPipelineBusErrors();
                     this._pullAndSendFrame();
                     return GLib.SOURCE_CONTINUE;
