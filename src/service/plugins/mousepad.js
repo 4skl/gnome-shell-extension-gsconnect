@@ -17,6 +17,8 @@ Gst.init(null);
 
 const SCREENSHARE_FPS = 30;
 const SCREENSHARE_BITRATE_KBPS = 2500;
+const SCREENSHARE_MAX_OUT_DIM = 720;
+const SCREENSHARE_ZOOM_OUT = 1.0; // 1.0 = strict 1:1 physical mm; increase (e.g. 1.25) to zoom out
 const STREAM_PORT_MIN = 1720;
 const STREAM_PORT_MAX = 1764;
 const FALLBACK_MM_PER_PX = 25.4 / 96.0;
@@ -142,7 +144,6 @@ const MousepadPlugin = GObject.registerClass({
         this._cropDirty = false;
         this._boxLeft = null;
         this._boxTop = null;
-        this._lockedCropSize = null;
         this._fracX = 0;
         this._fracY = 0;
 
@@ -220,6 +221,7 @@ const MousepadPlugin = GObject.registerClass({
         if (typeof body.viewWidthMm === 'number' && body.viewWidthMm > 0 &&
             typeof body.viewHeightMm === 'number' && body.viewHeightMm > 0) {
             this._phoneViewMm = [body.viewWidthMm, body.viewHeightMm];
+            this._cropDirty = true;
         }
     }
 
@@ -396,25 +398,41 @@ const MousepadPlugin = GObject.registerClass({
         return [sw * FALLBACK_MM_PER_PX, sh * FALLBACK_MM_PER_PX];
     }
 
-    _computeCropSize(streamW, streamH) {
-        const [monWmm, monHmm] = this._monitorMm;
+    _computeFixedOutputSize() {
         const [viewWmm, viewHmm] = this._phoneViewMm;
-        let cropW = Math.round(streamW * (viewWmm / monWmm));
-        let cropH = Math.round(streamH * (viewHmm / monHmm));
-        cropW = Math.min(streamW, Math.max(64, cropW - (cropW % 2)));
-        cropH = Math.min(streamH, Math.max(64, cropH - (cropH % 2)));
-        return [cropW, cropH];
+        const aspect = viewWmm / viewHmm;
+        let outW, outH;
+
+        if (aspect >= 1) {
+            outW = SCREENSHARE_MAX_OUT_DIM;
+            outH = Math.round(SCREENSHARE_MAX_OUT_DIM / aspect);
+        } else {
+            outH = SCREENSHARE_MAX_OUT_DIM;
+            outW = Math.round(SCREENSHARE_MAX_OUT_DIM * aspect);
+        }
+
+        outW = Math.max(64, outW - (outW % 2));
+        outH = Math.max(64, outH - (outH % 2));
+        return [outW, outH];
     }
 
     _applyCrop() {
-        if (!this._videobox || !this._lockedCropSize)
+        if (!this._videobox)
             return;
 
         const [streamW, streamH] = this._streamPixelSize;
         if (streamW <= 0 || streamH <= 0)
             return;
 
-        const [cropW, cropH] = this._lockedCropSize;
+        const [monWmm, monHmm] = this._monitorMm;
+        const [viewWmm, viewHmm] = this._phoneViewMm;
+
+        // Dynamically compute exact 1:1 physical crop from PipeWire's real pixel dimensions
+        let cropW = Math.round(streamW * (viewWmm / monWmm) * SCREENSHARE_ZOOM_OUT);
+        let cropH = Math.round(streamH * (viewHmm / monHmm) * SCREENSHARE_ZOOM_OUT);
+        cropW = Math.min(streamW, Math.max(64, cropW - (cropW % 2)));
+        cropH = Math.min(streamH, Math.max(64, cropH - (cropH % 2)));
+
         const scaleX = streamW / this._streamLogicalSize[0];
         const scaleY = streamH / this._streamLogicalSize[1];
         const cursorPxX = this._cursorLogical[0] * scaleX;
@@ -427,11 +445,6 @@ const MousepadPlugin = GObject.registerClass({
 
         const right = streamW - cropW - left;
         const bottom = streamH - cropH - top;
-
-        if (left === this._boxLeft && top === this._boxTop) {
-            this._cropDirty = false;
-            return;
-        }
 
         this._videobox.freeze_notify();
         try {
@@ -696,19 +709,16 @@ const MousepadPlugin = GObject.registerClass({
 
             const streamPort = this._openTcpServer();
             const streamHost = this._getLocalIpAddress();
+            const [outW, outH] = this._computeFixedOutputSize();
 
             this._streamPixelSize = [...this._streamLogicalSize];
-            this._lockedCropSize = this._computeCropSize(
-                this._streamPixelSize[0],
-                this._streamPixelSize[1]
-            );
-            const [cropW, cropH] = this._lockedCropSize;
 
             const pipelineDesc =
                 `pipewiresrc fd=${pwFd} path=${nodeId} do-timestamp=true ! ` +
                 `videorate ! video/x-raw,framerate=${SCREENSHARE_FPS}/1 ! ` +
                 `videoconvert ! video/x-raw,format=BGRx ! ` +
                 `videobox name=box fill=black ! ` +
+                `videoscale ! video/x-raw,width=${outW},height=${outH} ! ` +
                 `videoconvert ! video/x-raw,format=I420 ! ` +
                 `queue max-size-buffers=1 leaky=downstream ! ` +
                 `x264enc tune=zerolatency speed-preset=ultrafast bitrate=${SCREENSHARE_BITRATE_KBPS} key-int-max=30 ! ` +
@@ -734,8 +744,8 @@ const MousepadPlugin = GObject.registerClass({
                         codec: 'h264',
                         streamHost,
                         streamPort,
-                        width: cropW,
-                        height: cropH,
+                        width: outW,
+                        height: outH,
                     },
                 });
             }
@@ -886,7 +896,6 @@ const MousepadPlugin = GObject.registerClass({
         }
 
         this._streamPixelSize = [0, 0];
-        this._lockedCropSize = null;
         this._cropDirty = false;
         this._boxLeft = null;
         this._boxTop = null;
