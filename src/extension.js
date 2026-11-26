@@ -27,6 +27,16 @@ import * as Setup from './utils/setup.js';
 
 const QuickSettingsMenu = Main.panel.statusArea.quickSettings;
 
+const POINTER_DBUS_IFACE = `
+<node>
+  <interface name="org.gnome.Shell.Extensions.GSConnect.Pointer">
+    <method name="GetPosition">
+      <arg type="d" direction="out" name="x"/>
+      <arg type="d" direction="out" name="y"/>
+    </method>
+  </interface>
+</node>`;
+
 
 /**
  * A System Indicator used as the hub for spawning device indicators and
@@ -354,6 +364,7 @@ let serviceIndicator = null;
 
 export default class GSConnectExtension extends Extension {
     lockscreenInput = null;
+    _pointerDbus = null;
 
     constructor(metadata) {
         super(metadata);
@@ -392,9 +403,22 @@ export default class GSConnectExtension extends Extension {
 
         this.lockscreenInput = new Input.LockscreenRemoteAccess();
         this.lockscreenInput.patchInhibitor();
+
+        this._pointerDbus = Gio.DBusExportedObject.wrapJSObject(POINTER_DBUS_IFACE, {
+            GetPosition() {
+                const [x, y] = global.get_pointer();
+                return [x, y];
+            },
+        });
+        this._pointerDbus.export(Gio.DBus.session, '/org/gnome/Shell/Extensions/GSConnect/Pointer');
     }
 
     disable() {
+        if (this._pointerDbus) {
+            this._pointerDbus.unexport();
+            this._pointerDbus = null;
+        }
+
         serviceIndicator.destroy();
         serviceIndicator = null;
         Notification.unpatchGtkNotificationSources();
