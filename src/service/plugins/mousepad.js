@@ -15,8 +15,10 @@ import Plugin from '../plugin.js';
 
 Gst.init(null);
 
-const SCREENSHARE_FPS = 15;
-const SCREENSHARE_JPEG_QUALITY = 75;
+const SCREENSHARE_FPS = 30;
+const SCREENSHARE_BITRATE_KBPS = 2500;
+const STREAM_PORT_MIN = 1720;
+const STREAM_PORT_MAX = 1764;
 const FALLBACK_MM_PER_PX = 25.4 / 96.0;
 
 const PORTAL_BUS_NAME = 'org.freedesktop.portal.Desktop';
@@ -28,7 +30,6 @@ const SESSION_IFACE = 'org.freedesktop.portal.Session';
 const SHELL_BUS_NAME = 'org.gnome.Shell';
 const SHELL_POINTER_PATH = '/org/gnome/Shell/Extensions/GSConnect/Pointer';
 const SHELL_POINTER_IFACE = 'org.gnome.Shell.Extensions.GSConnect.Pointer';
-
 
 export const Metadata = {
     label: _('Mousepad'),
@@ -50,7 +51,6 @@ export const Metadata = {
         keyboard: {
             label: _('Remote Input'),
             icon_name: 'input-keyboard-symbolic',
-
             parameter_type: null,
             incoming: [
                 'kdeconnect.mousepad.echo',
@@ -61,7 +61,6 @@ export const Metadata = {
         screenShare: {
             label: _('Screen Sharing'),
             icon_name: 'preferences-desktop-remote-desktop-symbolic',
-
             parameter_type: null,
             incoming: [],
             outgoing: [],
@@ -70,91 +69,35 @@ export const Metadata = {
 };
 
 const KeyMap = new Map([
-    [1, Gdk.KEY_BackSpace],
-    [2, Gdk.KEY_Tab],
-    [3, Gdk.KEY_Linefeed],
-    [4, Gdk.KEY_Left],
-    [5, Gdk.KEY_Up],
-    [6, Gdk.KEY_Right],
-    [7, Gdk.KEY_Down],
-    [8, Gdk.KEY_Page_Up],
-    [9, Gdk.KEY_Page_Down],
-    [10, Gdk.KEY_Home],
-    [11, Gdk.KEY_End],
-    [12, Gdk.KEY_Return],
-    [13, Gdk.KEY_Delete],
-    [14, Gdk.KEY_Escape],
-    [15, Gdk.KEY_Sys_Req],
-    [16, Gdk.KEY_Scroll_Lock],
-    [17, 0],
-    [18, 0],
-    [19, 0],
-    [20, 0],
-    [21, Gdk.KEY_F1],
-    [22, Gdk.KEY_F2],
-    [23, Gdk.KEY_F3],
-    [24, Gdk.KEY_F4],
-    [25, Gdk.KEY_F5],
-    [26, Gdk.KEY_F6],
-    [27, Gdk.KEY_F7],
-    [28, Gdk.KEY_F8],
-    [29, Gdk.KEY_F9],
-    [30, Gdk.KEY_F10],
-    [31, Gdk.KEY_F11],
-    [32, Gdk.KEY_F12],
+    [1, Gdk.KEY_BackSpace], [2, Gdk.KEY_Tab], [3, Gdk.KEY_Linefeed],
+    [4, Gdk.KEY_Left], [5, Gdk.KEY_Up], [6, Gdk.KEY_Right], [7, Gdk.KEY_Down],
+    [8, Gdk.KEY_Page_Up], [9, Gdk.KEY_Page_Down], [10, Gdk.KEY_Home],
+    [11, Gdk.KEY_End], [12, Gdk.KEY_Return], [13, Gdk.KEY_Delete],
+    [14, Gdk.KEY_Escape], [15, Gdk.KEY_Sys_Req], [16, Gdk.KEY_Scroll_Lock],
+    [17, 0], [18, 0], [19, 0], [20, 0],
+    [21, Gdk.KEY_F1], [22, Gdk.KEY_F2], [23, Gdk.KEY_F3], [24, Gdk.KEY_F4],
+    [25, Gdk.KEY_F5], [26, Gdk.KEY_F6], [27, Gdk.KEY_F7], [28, Gdk.KEY_F8],
+    [29, Gdk.KEY_F9], [30, Gdk.KEY_F10], [31, Gdk.KEY_F11], [32, Gdk.KEY_F12],
 ]);
 
 const KeyMapCodes = new Map([
-    [1, 14],
-    [2, 15],
-    [3, 101],
-    [4, 105],
-    [5, 103],
-    [6, 106],
-    [7, 108],
-    [8, 104],
-    [9, 109],
-    [10, 102],
-    [11, 107],
-    [12, 28],
-    [13, 111],
-    [14, 1],
-    [15, 99],
-    [16, 70],
-    [17, 0],
-    [18, 0],
-    [19, 0],
-    [20, 0],
-    [21, 59],
-    [22, 60],
-    [23, 61],
-    [24, 62],
-    [25, 63],
-    [26, 64],
-    [27, 65],
-    [28, 66],
-    [29, 67],
-    [30, 68],
-    [31, 87],
-    [32, 88],
+    [1, 14], [2, 15], [3, 101], [4, 105], [5, 103], [6, 106], [7, 108],
+    [8, 104], [9, 109], [10, 102], [11, 107], [12, 28], [13, 111], [14, 1],
+    [15, 99], [16, 70], [17, 0], [18, 0], [19, 0], [20, 0],
+    [21, 59], [22, 60], [23, 61], [24, 62], [25, 63], [26, 64],
+    [27, 65], [28, 66], [29, 67], [30, 68], [31, 87], [32, 88],
 ]);
 
 const MousepadPlugin = GObject.registerClass({
     GTypeName: 'GSConnectMousepadPlugin',
     Properties: {
         'state': GObject.ParamSpec.boolean(
-            'state',
-            'State',
-            'Remote keyboard state',
-            GObject.ParamFlags.READABLE,
-            false
+            'state', 'State', 'Remote keyboard state',
+            GObject.ParamFlags.READABLE, false
         ),
         'screenshare': GObject.ParamSpec.boolean(
-            'screenshare',
-            'Screenshare',
-            'Screen sharing mode',
-            GObject.ParamFlags.READABLE,
-            false
+            'screenshare', 'Screenshare', 'Screen sharing mode',
+            GObject.ParamFlags.READABLE, false
         ),
     },
 }, class MousepadPlugin extends Plugin {
@@ -188,12 +131,18 @@ const MousepadPlugin = GObject.registerClass({
         this._videobox = null;
         this._boxSinkPad = null;
         this._portalSessionPath = null;
-        this._sendingFrame = false;
+
+        this._tcpServer = null;
+        this._streamConnection = null;
+        this._streamOut = null;
+        this._writingFrame = false;
+
         this._pollingPointer = false;
         this._shellPointerAvailable = true;
         this._cropDirty = false;
         this._boxLeft = null;
         this._boxTop = null;
+        this._lockedCropSize = null;
         this._fracX = 0;
         this._fracY = 0;
 
@@ -202,15 +151,12 @@ const MousepadPlugin = GObject.registerClass({
         this._streamPixelSize = [0, 0];
         this._monitorMm = [508, 285];
         this._cursorLogical = [960, 540];
-
         this._phoneViewMm = [70, 140];
-        this._phoneViewPx = [0, 0];
     }
 
     get state() {
         if (this._state === undefined)
             this._state = false;
-
         return this._state;
     }
 
@@ -220,18 +166,15 @@ const MousepadPlugin = GObject.registerClass({
 
     connected() {
         super.connected();
-
         if (this._disconnectTimerId !== 0) {
             GLib.Source.remove(this._disconnectTimerId);
             this._disconnectTimerId = 0;
         }
-
         this._sendState();
     }
 
     disconnected() {
         super.disconnected();
-
         this._state = false;
         this.notify('state');
 
@@ -254,15 +197,12 @@ const MousepadPlugin = GObject.registerClass({
             case 'kdeconnect.mousepad.request':
                 this._handleInput(packet.body);
                 break;
-
             case 'kdeconnect.mousepad.echo':
                 this._handleEcho(packet.body);
                 break;
-
             case 'kdeconnect.mousepad.keyboardstate':
                 this._handleState(packet);
                 break;
-
             case 'kdeconnect.mousepad.screenshare':
                 this._handleScreenSharePacket(packet.body);
                 break;
@@ -277,29 +217,15 @@ const MousepadPlugin = GObject.registerClass({
     }
 
     _updateViewport(body) {
-        let changed = false;
-
         if (typeof body.viewWidthMm === 'number' && body.viewWidthMm > 0 &&
             typeof body.viewHeightMm === 'number' && body.viewHeightMm > 0) {
             this._phoneViewMm = [body.viewWidthMm, body.viewHeightMm];
-            changed = true;
         }
-
-        if (typeof body.viewWidthPx === 'number' && body.viewWidthPx > 0 &&
-            typeof body.viewHeightPx === 'number' && body.viewHeightPx > 0) {
-            this._phoneViewPx = [Math.round(body.viewWidthPx), Math.round(body.viewHeightPx)];
-            changed = true;
-        }
-
-        if (changed)
-            this._cropDirty = true;
     }
 
     _handleInput(input) {
         if (!this.settings.get_boolean('share-control'))
             return;
-
-        this._updateViewport(input);
 
         let keysym;
         let modifiers = 0;
@@ -330,7 +256,6 @@ const MousepadPlugin = GObject.registerClass({
 
                 if (moveX !== 0 || moveY !== 0) {
                     this._input.movePointer(moveX, moveY);
-
                     if (this._screenshare) {
                         const [w, h] = this._streamLogicalSize;
                         this._cursorLogical = [
@@ -346,22 +271,18 @@ const MousepadPlugin = GObject.registerClass({
             case (input.hasOwnProperty('key') || input.hasOwnProperty('specialKey')):
                 if (input.key && input.key === '\u0000')
                     return;
-
                 if (input.alt) {
                     modifiers |= Gdk.ModifierType.MOD1_MASK;
                     modifiers_codes.push(56);
                 }
-
                 if (input.ctrl) {
                     modifiers |= Gdk.ModifierType.CONTROL_MASK;
                     modifiers_codes.push(29);
                 }
-
                 if (input.shift) {
                     modifiers |= Gdk.ModifierType.SHIFT_MASK;
                     modifiers_codes.push(42);
                 }
-
                 if (input.super) {
                     modifiers |= Gdk.ModifierType.SUPER_MASK;
                     modifiers_codes.push(125);
@@ -372,7 +293,6 @@ const MousepadPlugin = GObject.registerClass({
                         this._input.pressKeys(input.key, modifiers_codes);
                     else
                         this._input.pressKeys(input.key, modifiers);
-
                     this._sendEcho(input);
                 } else if (input.specialKey && KeyMap.has(input.specialKey)) {
                     if (!globalThis.HAVE_GNOME) {
@@ -382,7 +302,6 @@ const MousepadPlugin = GObject.registerClass({
                         keysym = KeyMap.get(input.specialKey);
                         this._input.pressKeys(keysym, modifiers);
                     }
-
                     this._sendEcho(input);
                 }
                 break;
@@ -390,27 +309,21 @@ const MousepadPlugin = GObject.registerClass({
             case input.hasOwnProperty('singleclick'):
                 this._input.clickPointer(Gdk.BUTTON_PRIMARY);
                 break;
-
             case input.hasOwnProperty('doubleclick'):
                 this._input.doubleclickPointer(Gdk.BUTTON_PRIMARY);
                 break;
-
             case input.hasOwnProperty('middleclick'):
                 this._input.clickPointer(Gdk.BUTTON_MIDDLE);
                 break;
-
             case input.hasOwnProperty('rightclick'):
                 this._input.clickPointer(Gdk.BUTTON_SECONDARY);
                 break;
-
             case input.hasOwnProperty('singlehold'):
                 this._input.pressPointer(Gdk.BUTTON_PRIMARY);
                 break;
-
             case input.hasOwnProperty('singlerelease'):
                 this._input.releasePointer(Gdk.BUTTON_PRIMARY);
                 break;
-
             default:
                 logError(new Error('Unknown input'));
         }
@@ -432,8 +345,7 @@ const MousepadPlugin = GObject.registerClass({
                 (conn, res) => {
                     this._pollingPointer = false;
                     try {
-                        const reply = conn.call_finish(res);
-                        const [gx, gy] = reply.deepUnpack();
+                        const [gx, gy] = conn.call_finish(res).deepUnpack();
                         const lx = gx - this._streamPos[0];
                         const ly = gy - this._streamPos[1];
                         if (Math.abs(lx - this._cursorLogical[0]) >= 0.5 ||
@@ -442,102 +354,67 @@ const MousepadPlugin = GObject.registerClass({
                             this._cropDirty = true;
                         }
                     } catch (e) {
-                        console.warn(`[GSConnect Mousepad] Shell Pointer D-Bus unavailable: ${e.message}`);
+                        console.warn(`[GSConnect Mousepad] Shell Pointer unavailable: ${e.message}`);
                         this._shellPointerAvailable = false;
                     }
                 }
             );
-            return;
-        }
-
-        try {
-            const display = Gdk.Display.get_default();
-            const seat = display?.get_default_seat();
-            const pointer = seat?.get_pointer();
-            if (pointer && typeof pointer.get_position === 'function') {
-                const pos = pointer.get_position();
-                if (Array.isArray(pos) && pos.length >= 3 && (pos[1] !== 0 || pos[2] !== 0)) {
-                    const lx = pos[1] - this._streamPos[0];
-                    const ly = pos[2] - this._streamPos[1];
-                    if (lx !== this._cursorLogical[0] || ly !== this._cursorLogical[1]) {
-                        this._cursorLogical = [lx, ly];
-                        this._cropDirty = true;
-                    }
-                }
-            }
-        } catch {
-            // Delta integration in _handleInput handles movement
         }
     }
 
     _detectMonitorPhysicalSize(streamPos, streamSize, hasStreamPos) {
         const [sx, sy] = streamPos;
         const [sw, sh] = streamSize;
-
         try {
             const display = Gdk.Display.get_default();
             const monitors = [];
-
             if (display) {
                 if (typeof display.get_n_monitors === 'function') {
-                    const n = display.get_n_monitors();
-                    for (let i = 0; i < n; i++)
+                    for (let i = 0; i < display.get_n_monitors(); i++)
                         monitors.push(display.get_monitor(i));
                 } else if (typeof display.get_monitors === 'function') {
                     const list = display.get_monitors();
-                    const n = list.get_n_items();
-                    for (let i = 0; i < n; i++)
+                    for (let i = 0; i < list.get_n_items(); i++)
                         monitors.push(list.get_item(i));
                 }
             }
-
             if (hasStreamPos) {
                 for (const mon of monitors) {
                     const geom = mon.get_geometry();
-                    if (geom.x === sx && geom.y === sy) {
-                        const wMm = mon.get_width_mm();
-                        const hMm = mon.get_height_mm();
-                        if (wMm > 0 && hMm > 0)
-                            return [wMm, hMm];
-                    }
+                    if (geom.x === sx && geom.y === sy && mon.get_width_mm() > 0 && mon.get_height_mm() > 0)
+                        return [mon.get_width_mm(), mon.get_height_mm()];
                 }
             }
-
             for (const mon of monitors) {
                 const geom = mon.get_geometry();
-                if (geom.width === sw && geom.height === sh) {
-                    const wMm = mon.get_width_mm();
-                    const hMm = mon.get_height_mm();
-                    if (wMm > 0 && hMm > 0)
-                        return [wMm, hMm];
-                }
+                if (geom.width === sw && geom.height === sh && mon.get_width_mm() > 0 && mon.get_height_mm() > 0)
+                    return [mon.get_width_mm(), mon.get_height_mm()];
             }
         } catch (e) {
             logError(e, 'Monitor physical size lookup fallback');
         }
-
         return [sw * FALLBACK_MM_PER_PX, sh * FALLBACK_MM_PER_PX];
     }
 
+    _computeCropSize(streamW, streamH) {
+        const [monWmm, monHmm] = this._monitorMm;
+        const [viewWmm, viewHmm] = this._phoneViewMm;
+        let cropW = Math.round(streamW * (viewWmm / monWmm));
+        let cropH = Math.round(streamH * (viewHmm / monHmm));
+        cropW = Math.min(streamW, Math.max(64, cropW - (cropW % 2)));
+        cropH = Math.min(streamH, Math.max(64, cropH - (cropH % 2)));
+        return [cropW, cropH];
+    }
+
     _applyCrop() {
-        if (!this._videobox)
+        if (!this._videobox || !this._lockedCropSize)
             return;
 
         const [streamW, streamH] = this._streamPixelSize;
         if (streamW <= 0 || streamH <= 0)
             return;
 
-        const [monWmm, monHmm] = this._monitorMm;
-        const [viewWmm, viewHmm] = this._phoneViewMm;
-
-        let cropW = Math.round(streamW * (viewWmm / monWmm));
-        let cropH = Math.round(streamH * (viewHmm / monHmm));
-
-        cropW = Math.min(streamW, Math.max(32, cropW + (cropW % 2)));
-        cropH = Math.min(streamH, Math.max(32, cropH + (cropH % 2)));
-
-        this._expectedCropSize = [cropW, cropH];
-
+        const [cropW, cropH] = this._lockedCropSize;
         const scaleX = streamW / this._streamLogicalSize[0];
         const scaleY = streamH / this._streamLogicalSize[1];
         const cursorPxX = this._cursorLogical[0] * scaleX;
@@ -578,17 +455,77 @@ const MousepadPlugin = GObject.registerClass({
         } finally {
             this._videobox.thaw_notify();
         }
-
         this._cropDirty = false;
+    }
+
+    _getLocalIpAddress() {
+        try {
+            const sock = Gio.Socket.new(
+                Gio.SocketFamily.IPV4,
+                Gio.SocketType.DATAGRAM,
+                Gio.SocketProtocol.UDP
+            );
+            sock.connect(Gio.InetSocketAddress.new_from_string('8.8.8.8', 53), null);
+            const ip = sock.get_local_address().get_address().to_string();
+            sock.close();
+            return ip;
+        } catch {
+            return null;
+        }
+    }
+
+    _openTcpServer() {
+        const server = new Gio.SocketService();
+        let boundPort = 0;
+
+        for (let port = STREAM_PORT_MIN; port <= STREAM_PORT_MAX; port++) {
+            try {
+                server.add_inet_port(port, null);
+                boundPort = port;
+                break;
+            } catch {
+                // Port in use, try next
+            }
+        }
+
+        if (boundPort === 0)
+            boundPort = server.add_any_inet_port(null);
+
+        server.connect('incoming', (_svc, connection) => {
+            if (!this._screenshare) {
+                connection.close(null);
+                return true;
+            }
+
+            if (this._streamConnection) {
+                try {
+                    this._streamConnection.close(null);
+                } catch {}
+            }
+
+            const socket = connection.get_socket();
+            socket.set_option(6, 1, 1); // IPPROTO_TCP (6), TCP_NODELAY (1)
+
+            this._streamConnection = connection;
+            this._streamOut = connection.get_output_stream();
+            this._writingFrame = false;
+
+            if (this._pipeline)
+                this._pipeline.set_state(Gst.State.PLAYING);
+
+            return true;
+        });
+
+        server.start();
+        this._tcpServer = server;
+        return boundPort;
     }
 
     _handleEcho(input) {
         if (!this._dialog || !this._dialog.visible)
             return;
-
         if (input.alt || input.ctrl || input.super)
             return;
-
         if (input.key) {
             this._dialog._isAck = true;
             this._dialog.entry.buffer.text += input.key;
@@ -599,10 +536,8 @@ const MousepadPlugin = GObject.registerClass({
     }
 
     async _handleScreenSharePacket(body) {
-        if (!this.settings.get_boolean('share-screen')) {
-            console.warn('[GSConnect Mousepad] share-screen is disabled in settings');
+        if (!this.settings.get_boolean('share-screen'))
             return;
-        }
 
         this._updateViewport(body);
 
@@ -619,19 +554,12 @@ const MousepadPlugin = GObject.registerClass({
     _sendEcho(input) {
         if (!input.sendAck)
             return;
-
         delete input.sendAck;
         input.isAck = true;
-
         if (this.device.connected) {
             try {
-                this.device.sendPacket({
-                    type: 'kdeconnect.mousepad.echo',
-                    body: input,
-                });
-            } catch (e) {
-                console.warn(`[GSConnect Mousepad] Echo skipped: ${e.message}`);
-            }
+                this.device.sendPacket({type: 'kdeconnect.mousepad.echo', body: input});
+            } catch {}
         }
     }
 
@@ -640,24 +568,15 @@ const MousepadPlugin = GObject.registerClass({
             try {
                 this.device.sendPacket({
                     type: 'kdeconnect.mousepad.keyboardstate',
-                    body: {
-                        state: this.settings.get_boolean('share-control'),
-                    },
+                    body: {state: this.settings.get_boolean('share-control')},
                 });
-            } catch (e) {
-                console.warn(`[GSConnect Mousepad] State send skipped: ${e.message}`);
-            }
+            } catch {}
         }
     }
 
     keyboard() {
-        if (this._dialog === undefined) {
-            this._dialog = new InputDialog({
-                device: this.device,
-                plugin: this,
-            });
-        }
-
+        if (this._dialog === undefined)
+            this._dialog = new InputDialog({device: this.device, plugin: this});
         this._dialog.present();
     }
 
@@ -673,15 +592,10 @@ const MousepadPlugin = GObject.registerClass({
             const token = `gsconnect_${GLib.random_int_range(100000, 999999)}`;
             const sender = Gio.DBus.session.get_unique_name().slice(1).replace(/\./g, '_');
             const requestPath = `/org/freedesktop/portal/desktop/request/${sender}/${token}`;
-
             options.handle_token = new GLib.Variant('s', token);
 
             const subId = Gio.DBus.session.signal_subscribe(
-                PORTAL_BUS_NAME,
-                REQUEST_IFACE,
-                'Response',
-                requestPath,
-                null,
+                PORTAL_BUS_NAME, REQUEST_IFACE, 'Response', requestPath, null,
                 Gio.DBusSignalFlags.NO_MATCH_RULE,
                 (_conn, _sender, _path, _iface, _signal, params) => {
                     Gio.DBus.session.signal_unsubscribe(subId);
@@ -694,15 +608,9 @@ const MousepadPlugin = GObject.registerClass({
             );
 
             Gio.DBus.session.call(
-                PORTAL_BUS_NAME,
-                PORTAL_OBJECT_PATH,
-                SCREENCAST_IFACE,
-                method,
+                PORTAL_BUS_NAME, PORTAL_OBJECT_PATH, SCREENCAST_IFACE, method,
                 new GLib.Variant(signature, [...prefixArgs, options]),
-                new GLib.VariantType('(o)'),
-                Gio.DBusCallFlags.NONE,
-                -1,
-                null,
+                new GLib.VariantType('(o)'), Gio.DBusCallFlags.NONE, -1, null,
                 (conn, res) => {
                     try {
                         conn.call_finish(res);
@@ -728,28 +636,18 @@ const MousepadPlugin = GObject.registerClass({
         try {
             const sessionToken = `gsconnect_sess_${GLib.random_int_range(100000, 999999)}`;
             const createRes = await this._portalRequest(
-                'CreateSession',
-                '(a{sv})',
-                [],
+                'CreateSession', '(a{sv})', [],
                 {session_handle_token: new GLib.Variant('s', sessionToken)}
             );
             this._portalSessionPath = createRes.session_handle.deepUnpack();
 
             await this._portalRequest(
-                'SelectSources',
-                '(oa{sv})',
-                [this._portalSessionPath],
-                {
-                    types: new GLib.Variant('u', 1),
-                    cursor_mode: new GLib.Variant('u', 2),
-                }
+                'SelectSources', '(oa{sv})', [this._portalSessionPath],
+                {types: new GLib.Variant('u', 1), cursor_mode: new GLib.Variant('u', 2)}
             );
 
             const startRes = await this._portalRequest(
-                'Start',
-                '(osa{sv})',
-                [this._portalSessionPath, ''],
-                {}
+                'Start', '(osa{sv})', [this._portalSessionPath, ''], {}
             );
 
             const streams = startRes.streams.deepUnpack();
@@ -761,9 +659,7 @@ const MousepadPlugin = GObject.registerClass({
             this._streamPos = hasStreamPos ? streamProps.position.deepUnpack() : [0, 0];
             this._streamLogicalSize = streamProps.size ? streamProps.size.deepUnpack() : [1920, 1080];
             this._monitorMm = this._detectMonitorPhysicalSize(
-                this._streamPos,
-                this._streamLogicalSize,
-                hasStreamPos
+                this._streamPos, this._streamLogicalSize, hasStreamPos
             );
 
             this._shellPointerAvailable = true;
@@ -777,16 +673,10 @@ const MousepadPlugin = GObject.registerClass({
 
             const [fdReply, fdList] = await new Promise((resolve, reject) => {
                 Gio.DBus.session.call_with_unix_fd_list(
-                    PORTAL_BUS_NAME,
-                    PORTAL_OBJECT_PATH,
-                    SCREENCAST_IFACE,
+                    PORTAL_BUS_NAME, PORTAL_OBJECT_PATH, SCREENCAST_IFACE,
                     'OpenPipeWireRemote',
                     new GLib.Variant('(oa{sv})', [this._portalSessionPath, {}]),
-                    new GLib.VariantType('(h)'),
-                    Gio.DBusCallFlags.NONE,
-                    -1,
-                    null,
-                    null,
+                    new GLib.VariantType('(h)'), Gio.DBusCallFlags.NONE, -1, null, null,
                     (conn, res) => {
                         try {
                             resolve(conn.call_with_unix_fd_list_finish(res));
@@ -797,16 +687,22 @@ const MousepadPlugin = GObject.registerClass({
                 );
             });
 
-            const fdIndex = fdReply.deepUnpack()[0];
-            pwFd = fdList.steal_fds()[fdIndex];
-
+            pwFd = fdList.steal_fds()[fdReply.deepUnpack()[0]];
             if (!this._screenshare) {
-                try {
-                    GLib.close(pwFd);
-                } catch {}
+                try { GLib.close(pwFd); } catch {}
                 pwFd = -1;
                 return;
             }
+
+            const streamPort = this._openTcpServer();
+            const streamHost = this._getLocalIpAddress();
+
+            this._streamPixelSize = [...this._streamLogicalSize];
+            this._lockedCropSize = this._computeCropSize(
+                this._streamPixelSize[0],
+                this._streamPixelSize[1]
+            );
+            const [cropW, cropH] = this._lockedCropSize;
 
             const pipelineDesc =
                 `pipewiresrc fd=${pwFd} path=${nodeId} do-timestamp=true ! ` +
@@ -814,8 +710,11 @@ const MousepadPlugin = GObject.registerClass({
                 `videoconvert ! video/x-raw,format=BGRx ! ` +
                 `videobox name=box fill=black ! ` +
                 `videoconvert ! video/x-raw,format=I420 ! ` +
-                `jpegenc quality=${SCREENSHARE_JPEG_QUALITY} ! ` +
-                `appsink name=sink emit-signals=false max-buffers=1 drop=true sync=false`;
+                `queue max-size-buffers=1 leaky=downstream ! ` +
+                `x264enc tune=zerolatency speed-preset=ultrafast bitrate=${SCREENSHARE_BITRATE_KBPS} key-int-max=30 ! ` +
+                `h264parse config-interval=-1 ! ` +
+                `video/x-h264,stream-format=byte-stream,alignment=au ! ` +
+                `appsink name=sink emit-signals=false max-buffers=10 drop=false sync=false`;
 
             this._pipeline = Gst.parse_launch(pipelineDesc);
             pwFd = -1;
@@ -825,31 +724,30 @@ const MousepadPlugin = GObject.registerClass({
             this._boxSinkPad = this._videobox.get_static_pad('sink');
             this._boxLeft = null;
             this._boxTop = null;
-
-            this._streamPixelSize = [...this._streamLogicalSize];
             this._applyCrop();
 
-            this._pipeline.set_state(Gst.State.PLAYING);
-
             if (this.device.connected) {
-                try {
-                    this.device.sendPacket({
-                        type: 'kdeconnect.mousepad.screenshare',
-                        body: {startScreenShare: true},
-                    });
-                } catch {}
+                this.device.sendPacket({
+                    type: 'kdeconnect.mousepad.screenshare',
+                    body: {
+                        startScreenShare: true,
+                        codec: 'h264',
+                        streamHost,
+                        streamPort,
+                        width: cropW,
+                        height: cropH,
+                    },
+                });
             }
 
-            const intervalMs = Math.max(20, Math.round(1000 / SCREENSHARE_FPS));
             this._screenShareTimerId = GLib.timeout_add(
                 GLib.PRIORITY_DEFAULT,
-                intervalMs,
+                10,
                 () => {
                     if (!this._screenshare || !this._appsink) {
                         this._screenShareTimerId = 0;
                         return GLib.SOURCE_REMOVE;
                     }
-
                     this._pollLiveCursorPosition();
                     this._pullPipelineBusErrors();
                     this._pullAndSendFrame();
@@ -858,9 +756,7 @@ const MousepadPlugin = GObject.registerClass({
             );
         } catch (e) {
             if (pwFd !== -1) {
-                try {
-                    GLib.close(pwFd);
-                } catch {}
+                try { GLib.close(pwFd); } catch {}
             }
             logError(e, 'Screen sharing failed to start');
             await this._stopScreenSharing(false);
@@ -872,7 +768,6 @@ const MousepadPlugin = GObject.registerClass({
     _pullPipelineBusErrors() {
         if (!this._pipeline)
             return;
-
         const bus = this._pipeline.get_bus();
         if (!bus)
             return;
@@ -884,15 +779,12 @@ const MousepadPlugin = GObject.registerClass({
                 logError(err, `GStreamer screenshare error: ${dbg}`);
                 this._stopScreenSharing(true);
                 break;
-            } else if (msg.type === Gst.MessageType.WARNING) {
-                const [warn, dbg] = msg.parse_warning();
-                console.warn(`[GSConnect Mousepad] GStreamer warning: ${warn.message} (${dbg})`);
             }
         }
     }
 
     _pullAndSendFrame() {
-        if (!this._screenshare || !this._appsink || !this.device.connected || this._sendingFrame)
+        if (!this._screenshare || !this._appsink || !this._streamOut)
             return;
 
         if (this._boxSinkPad) {
@@ -905,8 +797,6 @@ const MousepadPlugin = GObject.registerClass({
                     (w !== this._streamPixelSize[0] || h !== this._streamPixelSize[1])) {
                     this._streamPixelSize = [w, h];
                     this._applyCrop();
-                    this._appsink.try_pull_sample(0);
-                    return;
                 }
             }
         }
@@ -914,45 +804,55 @@ const MousepadPlugin = GObject.registerClass({
         if (this._cropDirty)
             this._applyCrop();
 
+        if (this._writingFrame)
+            return;
+
         const sample = this._appsink.try_pull_sample(0);
         if (!sample)
             return;
 
         const buffer = sample.get_buffer();
-        const caps = sample.get_caps();
-        const structure = caps ? caps.get_structure(0) : null;
-        const width = structure ? structure.get_int('width')[1] : 0;
-        const height = structure ? structure.get_int('height')[1] : 0;
-
-        if (this._expectedCropSize &&
-            (width !== this._expectedCropSize[0] || height !== this._expectedCropSize[1]))
+        const [ok, mapInfo] = buffer.map(Gst.MapFlags.READ);
+        if (!ok)
             return;
 
-        const [ok, mapInfo] = buffer.map(Gst.MapFlags.READ);
-        if (ok) {
-            this._sendingFrame = true;
-            try {
-                const bytes = mapInfo.data instanceof Uint8Array
-                    ? mapInfo.data
-                    : new Uint8Array(mapInfo.data);
+        try {
+            const raw = mapInfo.data instanceof Uint8Array
+                ? mapInfo.data
+                : new Uint8Array(mapInfo.data);
+            const len = raw.byteLength;
+            if (len === 0)
+                return;
 
-                if (bytes.byteLength > 0 && bytes.byteLength < 60000 && this.device.connected) {
-                    this.device.sendPacket({
-                        type: 'kdeconnect.mousepad.screenshare',
-                        body: {
-                            screenData: GLib.base64_encode(bytes),
-                            format: 'jpeg',
-                            width,
-                            height,
-                        },
-                    });
+            const packet = new Uint8Array(4 + len);
+            packet[0] = (len >>> 24) & 0xff;
+            packet[1] = (len >>> 16) & 0xff;
+            packet[2] = (len >>> 8) & 0xff;
+            packet[3] = len & 0xff;
+            packet.set(raw, 4);
+
+            this._writingFrame = true;
+            const out = this._streamOut;
+            out.write_all_async(
+                packet,
+                GLib.PRIORITY_DEFAULT,
+                null,
+                (stream, res) => {
+                    this._writingFrame = false;
+                    try {
+                        stream.write_all_finish(res);
+                        if (this._screenshare)
+                            this._pullAndSendFrame();
+                    } catch {
+                        if (this._streamOut === stream) {
+                            this._streamOut = null;
+                            this._streamConnection = null;
+                        }
+                    }
                 }
-            } catch (e) {
-                console.warn(`[GSConnect Mousepad] Frame send skipped during link swap: ${e.message}`);
-            } finally {
-                buffer.unmap(mapInfo);
-                this._sendingFrame = false;
-            }
+            );
+        } finally {
+            buffer.unmap(mapInfo);
         }
     }
 
@@ -961,13 +861,11 @@ const MousepadPlugin = GObject.registerClass({
             GLib.Source.remove(this._disconnectTimerId);
             this._disconnectTimerId = 0;
         }
-
         if (this._screenShareTimerId !== 0) {
             if (GLib.MainContext.default().find_source_by_id(this._screenShareTimerId))
                 GLib.Source.remove(this._screenShareTimerId);
             this._screenShareTimerId = 0;
         }
-
         if (this._pipeline !== null) {
             this._pipeline.set_state(Gst.State.NULL);
             this._pipeline = null;
@@ -975,8 +873,20 @@ const MousepadPlugin = GObject.registerClass({
             this._videobox = null;
             this._boxSinkPad = null;
         }
+        if (this._streamConnection !== null) {
+            try { this._streamConnection.close(null); } catch {}
+            this._streamConnection = null;
+            this._streamOut = null;
+            this._writingFrame = false;
+        }
+        if (this._tcpServer !== null) {
+            this._tcpServer.stop();
+            this._tcpServer.close();
+            this._tcpServer = null;
+        }
 
         this._streamPixelSize = [0, 0];
+        this._lockedCropSize = null;
         this._cropDirty = false;
         this._boxLeft = null;
         this._boxTop = null;
@@ -986,16 +896,8 @@ const MousepadPlugin = GObject.registerClass({
             this._portalSessionPath = null;
             await new Promise((resolve) => {
                 Gio.DBus.session.call(
-                    PORTAL_BUS_NAME,
-                    path,
-                    SESSION_IFACE,
-                    'Close',
-                    null,
-                    null,
-                    Gio.DBusCallFlags.NONE,
-                    -1,
-                    null,
-                    () => resolve()
+                    PORTAL_BUS_NAME, path, SESSION_IFACE, 'Close',
+                    null, null, Gio.DBusCallFlags.NONE, -1, null, () => resolve()
                 );
             });
         }
@@ -1021,7 +923,6 @@ const MousepadPlugin = GObject.registerClass({
             GLib.Source.remove(this._disconnectTimerId);
             this._disconnectTimerId = 0;
         }
-
         this._stopScreenSharing(false);
 
         if (this._input !== undefined) {
@@ -1030,13 +931,11 @@ const MousepadPlugin = GObject.registerClass({
             else
                 this._input = Components.release('input');
         }
-
         if (this._dialog !== undefined)
             this._dialog.destroy();
 
         this.settings.disconnect(this._shareControlChangedId);
         this.settings.disconnect(this._shareScreenChangedId);
-
         super.destroy();
     }
 });
