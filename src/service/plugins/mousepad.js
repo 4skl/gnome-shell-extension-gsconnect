@@ -800,6 +800,8 @@ const MousepadPlugin = GObject.registerClass({
             }
 
             let pollTick = 0;
+            let lastFrameTime = GLib.get_monotonic_time();
+            const frameInterval = 1000 / fps; // ms per frame at target FPS
             this._screenShareTimerId = GLib.timeout_add(
                 GLib.PRIORITY_DEFAULT,
                 10,
@@ -811,7 +813,11 @@ const MousepadPlugin = GObject.registerClass({
                     if (++pollTick % 3 === 0)
                         this._pollLiveCursorPosition();
                     this._pullPipelineBusErrors();
-                    this._pullAndSendFrame();
+                    const now = GLib.get_monotonic_time();
+                    if (now - lastFrameTime >= frameInterval) {
+                        lastFrameTime = now;
+                        this._pullAndSendFrame();
+                    }
                     return GLib.SOURCE_CONTINUE;
                 }
             );
