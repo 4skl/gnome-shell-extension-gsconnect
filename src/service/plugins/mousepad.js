@@ -752,6 +752,18 @@ const MousepadPlugin = GObject.registerClass({
             }
 
             const streamPort = this._openTcpServer();
+
+            // Guard against race condition: if stopScreenSharing was called
+            // between TCP server creation and now, clean up and return early.
+            if (!this._screenshare) {
+                if (this._tcpServer) {
+                    this._tcpServer.stop();
+                    this._tcpServer.close();
+                    this._tcpServer = null;
+                }
+                return;
+            }
+
             const streamHost = this._getLocalIpAddress();
             const [outW, outH] = this._computeFixedOutputSize();
 
@@ -784,6 +796,18 @@ const MousepadPlugin = GObject.registerClass({
             this._boxLeft = null;
             this._boxTop = null;
             this._applyCrop();
+
+            // Guard against race condition before sending start packet to device.
+            // If stopScreenSharing was called after the pipeline was ready,
+            // do not send the packet and let stopScreenSharing handle cleanup.
+            if (!this._screenshare) {
+                if (this._tcpServer) {
+                    this._tcpServer.stop();
+                    this._tcpServer.close();
+                    this._tcpServer = null;
+                }
+                return;
+            }
 
             if (this.device.connected) {
                 this.device.sendPacket({
